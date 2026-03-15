@@ -6,6 +6,8 @@ const FormData = require('form-data');
 require('dotenv').config();
 
 const apiRoutes = require('./routes/api');
+const authRoutes = require('./routes/auth');
+const adminRoutes = require('./routes/admin');
 const connectDB = require('./db');
 
 const app = express();
@@ -18,6 +20,8 @@ app.use(express.json());
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api', apiRoutes);
 
 // Проксирование загруженного аудио-файла от клиента к Python ML микросервису

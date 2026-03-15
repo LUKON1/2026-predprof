@@ -17,6 +17,7 @@ services:
     build:
       context: ./ml
       dockerfile: Dockerfile
+      network: host
     container_name: predprof-ml
     ports:
       - "8000:8000"
@@ -26,6 +27,7 @@ services:
     build: 
       context: ./server
       dockerfile: Dockerfile
+      network: host
     container_name: predprof-backend
     ports:
       - "5000:5000"
@@ -46,6 +48,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     container_name: predprof-frontend
     ports:
       - "80:80"
