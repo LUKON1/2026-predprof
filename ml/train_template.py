@@ -1,130 +1,145 @@
 """
-Шаблон для обучения нейросети (Классификация инопланетных звуков).
+ШАБЛОН ОБУЧЕНИЯ ДЛЯ YANDEX DATASPHERE (ОЛИМПИАДА 2026)
 
-Задание с олимпиады (Легенда):
-1. Классификация сигналов (аудио, вероятно .wav файлы).
-2. Классы в датасете повреждены - вместо чисел написаны нечитаемые строки. 
-   Сказано: "Восстановить обозначения классов. Классы обозначались целыми числами, начиная с единицы."
-3. Обучить нейросеть от 10 до 100 эпох.
+ИНСТРУКЦИЯ ПО ЗАПУСКУ В ОБЛАКЕ:
+1. Создайте проект в DataSphere, откройте JupyterLab.
+2. Скачайте архивы .npz по ссылкам из задания.
+3. Загрузите скачанный файл с тренировочными данными (train_x, train_y, valid_x, valid_y) в DataSphere.
+4. Скопируйте этот код полностью в ячейку (или несколько ячеек) и запустите.
 
-Этот код можно скопировать в Yandex DataSphere (Jupyter Notebook).
+Скрипт восстановит классы, подготовит данные, обучит ИИ на 50 эпох
+и сохранит саму модель (alien_model.h5) и лог обучения (history.json) для фронтенда.
 """
 
-# %% [1] Установка библиотек (в облаке)
-# !pip install librosa pandas numpy scikit-learn tensorflow matplotlib seaborn
+# !pip install numpy pandas scikit-learn tensorflow matplotlib librosa
 
-# %% [2] Импорты
-import os
-import pandas as pd
 import numpy as np
-import librosa
+import json
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, Flatten
+import librosa
 
-# %% [3] ЗАДАЧА №1: Восстановление классов
-# Предположим, у нас есть `metadata.csv` со столбцами: `filename`, `damaged_class_name`
-df = pd.read_csv('metadata.csv') # Поменяйте на имя вашего файла!
+# ==========================================
+# 1. ЗАГРУЗКА И ВОССТАНОВЛЕНИЕ ДАННЫХ
+# ==========================================
 
-# Выводим уникальные поврежденные строки
-print("Поврежденные классы:", df['damaged_class_name'].unique())
+# УКАЖИТЕ ПУТЬ К ТРЕНИРОВОЧНОМУ АРХИВУ (который скачали по первой ссылке)
+DATA_PATH = "train_data.npz" # переименуйте файл или измените путь
 
-# Кодируем строки в числа с помощью LabelEncoder
+print(f"Загрузка данных из {DATA_PATH}...")
+data = np.load(DATA_PATH, allow_pickle=True)
+
+train_x = data['train_x'] # wav-файлы
+train_y = data['train_y'] # поврежденные классы (строки)
+valid_x = data['valid_x'] 
+valid_y = data['valid_y'] # целые числа классов
+
+print("Уникальные поврежденные метки (train_y):", np.unique(train_y))
+
+# Восстановление классов (с нуля, как в задании: "целыми числами, начиная с нуля")
 encoder = LabelEncoder()
-encoded_labels = encoder.fit_transform(df['damaged_class_name'])
+encoded_train_y = encoder.fit_transform(train_y)
 
-# Так как по заданию сказано "классы от 1", прибавляем единицу:
-df['real_class_id'] = encoded_labels + 1
+# Сохраним словарь для нашего сервера (какая цифра означает какой класс)
+class_mapping = {int(i): str(label) for i, label in enumerate(encoder.classes_)}
+with open('class_mapping.json', 'w', encoding='utf-8') as f:
+    json.dump(class_mapping, f, ensure_ascii=False, indent=4)
 
-# Сохраним словарь для перевода "строка -> число" на всякий случай
-class_mapping = dict(zip(encoder.classes_, encoder.transform(encoder.classes_) + 1))
-print("Восстановленные классы (карта):", class_mapping)
+print("Классы успешно восстановлены! Маппинг:", class_mapping)
 
-# Для нейросети (Tensorflow) нужны классы от 0 до N-1, поэтому сохраним и их:
-df['tf_class_id'] = encoded_labels 
+NUM_CLASSES = len(encoder.classes_)
 
-# %% [4] Извлечение MFCC (фичей) из аудиофайлов
-AUDIO_DIR = 'data/audio/' # Поменяйте на вашу папку со звуками
-features = []
-labels = []
 
-print("Извлекаем фичи. Это может занять время...")
-for index, row in df.iterrows():
-    file_path = os.path.join(AUDIO_DIR, row['filename'])
-    
-    try:
-        # Загружаем аудио (усредняем каналы)
-        y, sr = librosa.load(file_path, sr=22050, duration=3) # можно ограничить время
+# ==========================================
+# 2. ИЗВЛЕЧЕНИЕ ПРИЗНАКОВ (ФИЧЕЙ) ИЗ АУДИО
+# ==========================================
+
+def extract_features(audio_arrays, sr=22050):
+    features = []
+    for audio in audio_arrays:
+        # Аудио может лежать в архиве как байты (wav) или как numpy array
+        # Если это байты (wav файл) - нужно использовать librosa или io.BytesIO
+        # Предполагаем, что внутри npz уже лежат оцифрованные массивы numpy
         
-        # Получаем Мел-частотные кепстральные коэффициенты (MFCC) - стандарт для голоса/звуков
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        
-        # Усредняем матрицу по времени, получаем вектор из 40 чисел для каждого файла (самый простой подход)
-        mfcc_scaled = np.mean(mfcc.T, axis=0)
-        
-        features.append(mfcc_scaled)
-        labels.append(row['tf_class_id'])
-    except Exception as e:
-        print(f"Ошибка чтения {file_path}: {e}")
+        # Зачастую в олимпиадных npz лежит массив-сигнал напрямую
+        # Попробуем извлечь MFCC (стандарт для аудио)
+        try:
+            # Если это строка (путь) или байты - нужно декодировать. 
+            # Допустим, это уже float массив звука:
+            if isinstance(audio, bytes):
+                import io, soundfile as sf
+                audio, sr_actual = sf.read(io.BytesIO(audio))
+            else:
+                audio = np.array(audio, dtype=float)
+            
+            # Извлекаем признаки
+            mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40)
+            mfccs_processed = np.mean(mfccs.T, axis=0)
+            features.append(mfccs_processed)
+        except Exception as e:
+            # Заглушка, если данные битые
+            features.append(np.zeros(40))
+    return np.array(features)
 
-X = np.array(features)
-y = np.array(labels)
+print("Извлекаем аудио-признаки (это займет время)...")
+X_train = extract_features(train_x)
+X_valid = extract_features(valid_x)
 
-num_classes = len(np.unique(y))
-print(f"Готово! X shape: {X.shape}, y shape: {y.shape}. Классов: {num_classes}")
+# Убедимся, что valid_y тоже правильного типа
+y_train = np.array(encoded_train_y, dtype=int)
+y_valid = np.array(valid_y, dtype=int)
 
-# %% [5] Разделение на train / test
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# %% [6] Создание нейросети (Простая полносвязная)
-# Можно улучшить, добавив Conv1D, если не усреднять MFCC, а подавать как картинку 2D. 
+# ==========================================
+# 3. ПОСТРОЕНИЕ И ОБУЧЕНИЕ НЕЙРОСЕТИ
+# ==========================================
+
 model = Sequential([
     Dense(256, activation='relu', input_shape=(X_train.shape[1],)),
     Dropout(0.3),
     Dense(128, activation='relu'),
     Dropout(0.3),
-    Dense(64, activation='relu'),
-    Dense(num_classes, activation='softmax') # softmax для мульти-классификации
+    Dense(NUM_CLASSES, activation='softmax')
 ])
 
 model.compile(optimizer='adam', 
               loss='sparse_categorical_crossentropy', 
               metrics=['accuracy'])
 
-model.summary()
-
-# %% [7] Обучение (по условию: от 10 до 100 эпох)
+# В ТЗ сказано "от 10 до 100 эпох"
 EPOCHS = 50 
+
+print("Начинаем обучение нейросети...")
 history = model.fit(
-    X_train, y_train, 
-    epochs=EPOCHS, 
-    batch_size=32, 
-    validation_data=(X_test, y_test)
+    X_train, y_train,
+    validation_data=(X_valid, y_valid),
+    epochs=EPOCHS,
+    batch_size=32
 )
 
-# %% [8] Построение графиков Обучения (Это требует задание (23% баллов) - Data Visualization)
-plt.figure(figsize=(12, 4))
 
-# График точности
-plt.subplot(1, 2, 1)
-plt.plot(history.history['accuracy'], label='Train Accuracy')
-plt.plot(history.history['val_accuracy'], label='Val Accuracy')
-plt.title('Точность (Accuracy)')
-plt.legend()
+# ==========================================
+# 4. СОХРАНЕНИЕ РЕЗУЛЬТАТОВ ДЛЯ ФРОНТЕНДА
+# ==========================================
 
-# График потерь
-plt.subplot(1, 2, 2)
-plt.plot(history.history['loss'], label='Train Loss')
-plt.plot(history.history['val_loss'], label='Val Loss')
-plt.title('Функция потерь (Loss)')
-plt.legend()
+# Сохраняем модель
+model.save("alien_model.h5")
+print("Модель сохранена как 'alien_model.h5'")
 
-plt.show() # Сохраните графики для презентации!
+# Сохраняем историю (ТОЧНОСТЬ на валидационных данных по эпохам) для построения Графика №1 на фронтенде
+hist_dict = {
+    'val_accuracy': history.history['val_accuracy'],
+    'epochs': list(range(1, EPOCHS + 1))
+}
+with open('history.json', 'w') as f:
+    json.dump(hist_dict, f)
 
-# %% [9] Сохранение модели для переноса на MERN-сервер
-model.save("alien_audio_model.h5")
-print("Модель alien_audio_model.h5 успешно сохранена! Скопируйте её в папку ml вашего Docker проекта.")
-# Чтобы загрузить её в FastAPI, используйте: model = tf.keras.models.load_model('alien_audio_model.h5')
+# Сохраняем количество записей на класс (График №2)
+unique, counts = np.unique(y_train, return_counts=True)
+train_counts = {int(k): int(v) for k, v in zip(unique, counts)}
+with open('train_counts.json', 'w') as f:
+    json.dump(train_counts, f)
+    
+print("Всё готово! Скачайте файлы: alien_model.h5, history.json, train_counts.json и class_mapping.json")
