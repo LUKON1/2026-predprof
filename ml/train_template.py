@@ -1,5 +1,5 @@
 """
-Training script for Yandex DataSphere (Olympiad 2026) - FINAL STABLE VERSION
+Training script for Yandex DataSphere (Olympiad 2026) - SIMPLIFIED STABLE VERSION
 
 Instructions:
 1. Upload Data.npz to DataSphere project files.
@@ -16,7 +16,7 @@ import numpy as np
 import librosa
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
+from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 
 # ==========================================
@@ -56,11 +56,11 @@ print(f"Dataset ready. Classes: {NUM_CLASSES}")
 
 
 # ==========================================
-# 2. FEATURE EXTRACTION (40 MFCC)
+# 2. FEATURE EXTRACTION (20 MFCC)
 # ==========================================
 
 def extract_features(audio_arrays, sr=22050):
-    """Extract 40 MFCC features with peak normalization."""
+    """Extract 20 MFCC features with peak normalization."""
     features = []
     total = len(audio_arrays)
     for i, audio in enumerate(audio_arrays):
@@ -72,8 +72,8 @@ def extract_features(audio_arrays, sr=22050):
             if np.max(np.abs(y)) > 0:
                 y = y / np.max(np.abs(y))
 
-            # BACK TO 40 MFCC (More detailed features)
-            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+            # BACK TO 20 MFCC (As requested)
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)
             mfcc_scaled = np.mean(mfcc.T, axis=0)
             features.append(mfcc_scaled)
 
@@ -82,11 +82,11 @@ def extract_features(audio_arrays, sr=22050):
                 file_obj = io.BytesIO(bytes(audio))
                 y, sr_loaded = librosa.load(file_obj, sr=sr)
                 if np.max(np.abs(y)) > 0: y = y / np.max(np.abs(y))
-                mfcc = librosa.feature.mfcc(y=y, sr=sr_loaded, n_mfcc=40)
+                mfcc = librosa.feature.mfcc(y=y, sr=sr_loaded, n_mfcc=20)
                 mfcc_scaled = np.mean(mfcc.T, axis=0)
                 features.append(mfcc_scaled)
             except Exception:
-                features.append(np.zeros(40))
+                features.append(np.zeros(20))
 
         if (i + 1) % 500 == 0:
             print(f"  Processed {i+1}/{total}...")
@@ -94,7 +94,7 @@ def extract_features(audio_arrays, sr=22050):
     return np.array(features)
 
 
-print("\nExtracting features (40 MFCC)...")
+print("\nExtracting features (20 MFCC)...")
 X_train = extract_features(train_x)
 X_valid = extract_features(valid_x)
 
@@ -106,23 +106,14 @@ print("Features normalized.")
 
 
 # ==========================================
-# 3. DEEPER MODEL ARCHITECTURE + BATCHNORM
+# 3. SIMPLIFIED MODEL ARCHITECTURE
 # ==========================================
 
 model = Sequential([
-    # Back to more capacity, but added BatchNormalization for stability
-    Dense(512, activation='relu', input_shape=(X_train.shape[1],)),
-    BatchNormalization(),
-    Dropout(0.4),
-    
-    Dense(256, activation='relu'),
-    BatchNormalization(),
+    Dense(128, activation='relu', input_shape=(X_train.shape[1],)),
+    Dropout(0.5), # High dropout to prevent memorizing
+    Dense(64, activation='relu'),
     Dropout(0.3),
-    
-    Dense(128, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.2),
-    
     Dense(NUM_CLASSES, activation='softmax')
 ])
 
@@ -134,17 +125,17 @@ model.compile(
 
 early_stop = EarlyStopping(
     monitor='val_loss', 
-    patience=20, # More patience
+    patience=15, 
     restore_best_weights=True,
     verbose=1
 )
 
-print("\nStarting final training...")
+print("\nStarting training (Simplified Model)...")
 history = model.fit(
     X_train, encoded_train_y,
     validation_data=(X_valid, encoded_valid_y),
     epochs=100,
-    batch_size=32,
+    batch_size=16, # Smaller batch size for better generalization
     callbacks=[early_stop]
 )
 

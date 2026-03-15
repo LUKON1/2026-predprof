@@ -47,15 +47,15 @@ class MetaResponse(BaseModel):
 
 
 def extract_single_features(audio_data: bytes, sr: int = 22050) -> np.ndarray:
-    """Extract 40 MFCC features with normalization."""
+    """Extract 20 MFCC features with normalization."""
     file_obj = io.BytesIO(audio_data)
     y, sr_loaded = librosa.load(file_obj, sr=sr)
     
     if np.max(np.abs(y)) > 0:
         y = y / np.max(np.abs(y))
         
-    # BACK TO 40 MFCC
-    mfcc = librosa.feature.mfcc(y=y, sr=sr_loaded, n_mfcc=40)
+    # SYNC WITH TRAIN: 20 MFCC
+    mfcc = librosa.feature.mfcc(y=y, sr=sr_loaded, n_mfcc=20)
     return np.mean(mfcc.T, axis=0)
 
 
@@ -73,6 +73,7 @@ async def predict(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error: {e}")
 
+    # Scale and predict
     input_tensor = scaler.transform(np.expand_dims(features, axis=0))
     predictions = model.predict(input_tensor, verbose=0)[0]
 
