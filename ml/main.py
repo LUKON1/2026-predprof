@@ -1,67 +1,107 @@
 import os
 import io
-import uuid
+import json
+import joblib
 import numpy as np
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 import librosa
+import tensorflow as tf
 
-# import tensorflow as tf
-# model = tf.keras.models.load_model('model.h5')
+# Load model and class mapping on startup
+MODEL_PATH = "alien_model.h5"
+CLASS_MAPPING_PATH = "class_mapping.json"
+HISTORY_PATH = "history.json"
+TRAIN_COUNTS_PATH = "train_counts.json"
+SCALER_PATH = "scaler.pkl"
+
+model = tf.keras.models.load_model(MODEL_PATH)
+scaler = joblib.load(SCALER_PATH)
+
+with open(CLASS_MAPPING_PATH, "r", encoding="utf-8") as f:
+    class_mapping = json.load(f)
+
+with open(HISTORY_PATH, "r") as f:
+    training_history = json.load(f)
+
+with open(TRAIN_COUNTS_PATH, "r") as f:
+    train_counts = json.load(f)
 
 app = FastAPI(title="Alien Audio Classification ML Service")
 
+class ClassProbability(BaseModel):
+    class_name: str
+    probability: float
+
 class PredictResponse(BaseModel):
-    prediction: int    # Восстановленный класс
-    confidence: float  # Уверенность нейросети
-    filename: str      # Имя обработанного файла
+    predicted_class: str
+    class_index: int
+    confidence: float
+    top_5_classes: list[ClassProbability]
+    filename: str
+
+class MetaResponse(BaseModel):
+    history: dict
+    train_counts: dict
+    num_classes: int
+
+
+def extract_single_features(audio_data: bytes, sr: int = 22050) -> np.ndarray:
+    """Extract 40 MFCC features with normalization."""
+    file_obj = io.BytesIO(audio_data)
+    y, sr_loaded = librosa.load(file_obj, sr=sr)
+    
+    if np.max(np.abs(y)) > 0:
+        y = y / np.max(np.abs(y))
+        
+    # BACK TO 40 MFCC
+    mfcc = librosa.feature.mfcc(y=y, sr=sr_loaded, n_mfcc=40)
+    return np.mean(mfcc.T, axis=0)
+
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "Audio ML Service is running"}
+    return {"status": "ok", "model_loaded": True}
+
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(file: UploadFile = File(...)):
-    """
-    Эндпоинт принимает аудиофайл (wav/mp3), 
-    обрабатывает его через librosa и прогоняет через нейросеть.
-    """
-    if not file.filename.endswith(('.wav', '.mp3', '.ogg')):
-        raise HTTPException(status_code=400, detail="Только аудиофайлы .wav, .mp3, .ogg")
+    contents = await file.read()
 
-    temp_path = f"temp_{uuid.uuid4()}_{file.filename}"
-    
     try:
-        # 1. Сохраняем загруженный файл на диск
-        contents = await file.read()
-        with open(temp_path, "wb") as f:
-            f.write(contents)
-            
-        # 2. Обработка звука (извлечение MFCC признаков)
-        # y, sr = librosa.load(temp_path, sr=22050, duration=3) # Читаем 3 секунды звука
-        # mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)   # Получаем матрицу
-        # feature_vector = np.mean(mfcc.T, axis=0)             # Усредняем (для простой нейросети)
-        
-        # 3. Предсказание (раскомментировать, когда будет модель)
-        # tf_input = np.expand_dims(feature_vector, axis=0) # Форма (1, 20) для Keras
-        # predictions = model.predict(tf_input)
-        # predicted_class = np.argmax(predictions, axis=1)[0] + 1 # +1 если классы от 1
-        # confidence = float(np.max(predictions))
-        
-        # --- ФЕЙКОВАЯ ЛОГИКА (УДАЛИТЬ ПОСЛЕ ОБУЧЕНИЯ) ---
-        predicted_class = np.random.randint(1, 10)
-        confidence = float(np.random.uniform(0.7, 0.99))
-        # --------------------------------------------------------
-
-        return PredictResponse(
-            prediction=predicted_class,
-            confidence=confidence,
-            filename=file.filename
-        )
-        
+        features = extract_single_features(contents)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Уборка мусора
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        raise HTTPException(status_code=422, detail=f"Error: {e}")
+
+    input_tensor = scaler.transform(np.expand_dims(features, axis=0))
+    predictions = model.predict(input_tensor, verbose=0)[0]
+
+    top_5_indices = np.argsort(predictions)[-5:][::-1]
+    top_5_classes = [
+        ClassProbability(
+            class_name=class_mapping.get(str(idx), f"Class_{idx}"),
+            probability=float(predictions[idx])
+        )
+        for idx in top_5_indices
+    ]
+
+    class_index = int(top_5_indices[0])
+    confidence = float(predictions[class_index])
+    class_name = class_mapping.get(str(class_index), f"Class_{class_index}")
+
+    return PredictResponse(
+        predicted_class=class_name,
+        class_index=class_index,
+        confidence=confidence,
+        top_5_classes=top_5_classes,
+        filename=file.filename
+    )
+
+
+@app.get("/meta", response_model=MetaResponse)
+def get_meta():
+    return MetaResponse(
+        history=training_history,
+        train_counts=train_counts,
+        num_classes=len(class_mapping)
+    )

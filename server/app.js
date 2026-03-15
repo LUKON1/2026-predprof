@@ -53,6 +53,18 @@ app.post('/api/ml/predict-audio', upload.single('audio'), async (req, res) => {
   }
 });
 
+// Проксирование метаданных обучения (графики)
+app.get('/api/ml/meta', async (req, res) => {
+  try {
+    const pythonMetaUrl = process.env.ML_META_URL || 'http://ml-service:8000/meta';
+    const response = await axios.get(pythonMetaUrl);
+    res.status(200).json(response.data);
+  } catch (error) {
+    console.error('Ошибка получения меты:', error.message);
+    res.status(500).json({ detail: 'ML Metadata Unavailable' });
+  }
+});
+
 // Тестовый эндпоинт для проверки здоровья
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', message: 'Server is running' });

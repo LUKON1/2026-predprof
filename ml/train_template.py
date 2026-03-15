@@ -1,145 +1,176 @@
 """
-ШАБЛОН ОБУЧЕНИЯ ДЛЯ YANDEX DATASPHERE (ОЛИМПИАДА 2026)
+Training script for Yandex DataSphere (Olympiad 2026) - FINAL STABLE VERSION
 
-ИНСТРУКЦИЯ ПО ЗАПУСКУ В ОБЛАКЕ:
-1. Создайте проект в DataSphere, откройте JupyterLab.
-2. Скачайте архивы .npz по ссылкам из задания.
-3. Загрузите скачанный файл с тренировочными данными (train_x, train_y, valid_x, valid_y) в DataSphere.
-4. Скопируйте этот код полностью в ячейку (или несколько ячеек) и запустите.
-
-Скрипт восстановит классы, подготовит данные, обучит ИИ на 50 эпох
-и сохранит саму модель (alien_model.h5) и лог обучения (history.json) для фронтенда.
+Instructions:
+1. Upload Data.npz to DataSphere project files.
+2. Copy this entire script into one cell and run it.
+3. After completion, download 5 files:
+   alien_model.h5, scaler.pkl, history.json, train_counts.json, class_mapping.json
 """
 
-# !pip install numpy pandas scikit-learn tensorflow matplotlib librosa
-
-import numpy as np
+import re
+import io
 import json
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import LabelEncoder
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, Flatten
+import joblib
+import numpy as np
 import librosa
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
+from tensorflow.keras.callbacks import EarlyStopping
 
 # ==========================================
-# 1. ЗАГРУЗКА И ВОССТАНОВЛЕНИЕ ДАННЫХ
+# 1. LOAD AND CLEAN DATA
 # ==========================================
 
-# УКАЖИТЕ ПУТЬ К ТРЕНИРОВОЧНОМУ АРХИВУ (который скачали по первой ссылке)
-DATA_PATH = "train_data.npz" # переименуйте файл или измените путь
+DATA_PATH = "Data.npz"
 
-print(f"Загрузка данных из {DATA_PATH}...")
+print(f"Loading data from {DATA_PATH}...")
 data = np.load(DATA_PATH, allow_pickle=True)
 
-train_x = data['train_x'] # wav-файлы
-train_y = data['train_y'] # поврежденные классы (строки)
-valid_x = data['valid_x'] 
-valid_y = data['valid_y'] # целые числа классов
+train_x = data['train_x']
+train_y = data['train_y']
+valid_x = data['valid_x']
+valid_y = data['valid_y']
 
-print("Уникальные поврежденные метки (train_y):", np.unique(train_y))
+def clean_label(label):
+    # Remove hex prefix
+    return re.sub(r'^[0-9a-f]{32,}', '', str(label)).strip('_').strip()
 
-# Восстановление классов (с нуля, как в задании: "целыми числами, начиная с нуля")
+clean_train_y = np.array([clean_label(l) for l in train_y])
+clean_valid_y = np.array([clean_label(l) for l in valid_y])
+
+all_labels = np.concatenate([clean_train_y, clean_valid_y])
 encoder = LabelEncoder()
-encoded_train_y = encoder.fit_transform(train_y)
+encoder.fit(all_labels)
 
-# Сохраним словарь для нашего сервера (какая цифра означает какой класс)
+encoded_train_y = encoder.transform(clean_train_y)
+encoded_valid_y = encoder.transform(clean_valid_y)
+
 class_mapping = {int(i): str(label) for i, label in enumerate(encoder.classes_)}
 with open('class_mapping.json', 'w', encoding='utf-8') as f:
     json.dump(class_mapping, f, ensure_ascii=False, indent=4)
 
-print("Классы успешно восстановлены! Маппинг:", class_mapping)
-
 NUM_CLASSES = len(encoder.classes_)
+print(f"Dataset ready. Classes: {NUM_CLASSES}")
 
 
 # ==========================================
-# 2. ИЗВЛЕЧЕНИЕ ПРИЗНАКОВ (ФИЧЕЙ) ИЗ АУДИО
+# 2. FEATURE EXTRACTION (40 MFCC)
 # ==========================================
 
 def extract_features(audio_arrays, sr=22050):
+    """Extract 40 MFCC features with peak normalization."""
     features = []
-    for audio in audio_arrays:
-        # Аудио может лежать в архиве как байты (wav) или как numpy array
-        # Если это байты (wav файл) - нужно использовать librosa или io.BytesIO
-        # Предполагаем, что внутри npz уже лежат оцифрованные массивы numpy
-        
-        # Зачастую в олимпиадных npz лежит массив-сигнал напрямую
-        # Попробуем извлечь MFCC (стандарт для аудио)
+    total = len(audio_arrays)
+    for i, audio in enumerate(audio_arrays):
         try:
-            # Если это строка (путь) или байты - нужно декодировать. 
-            # Допустим, это уже float массив звука:
-            if isinstance(audio, bytes):
-                import io, soundfile as sf
-                audio, sr_actual = sf.read(io.BytesIO(audio))
-            else:
-                audio = np.array(audio, dtype=float)
+            y = np.array(audio, dtype=float).flatten()
+            if len(y) < 10: raise ValueError("Short")
             
-            # Извлекаем признаки
-            mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40)
-            mfccs_processed = np.mean(mfccs.T, axis=0)
-            features.append(mfccs_processed)
-        except Exception as e:
-            # Заглушка, если данные битые
-            features.append(np.zeros(40))
+            # Normalize signal amplitude
+            if np.max(np.abs(y)) > 0:
+                y = y / np.max(np.abs(y))
+
+            # BACK TO 40 MFCC (More detailed features)
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+            mfcc_scaled = np.mean(mfcc.T, axis=0)
+            features.append(mfcc_scaled)
+
+        except Exception:
+            try:
+                file_obj = io.BytesIO(bytes(audio))
+                y, sr_loaded = librosa.load(file_obj, sr=sr)
+                if np.max(np.abs(y)) > 0: y = y / np.max(np.abs(y))
+                mfcc = librosa.feature.mfcc(y=y, sr=sr_loaded, n_mfcc=40)
+                mfcc_scaled = np.mean(mfcc.T, axis=0)
+                features.append(mfcc_scaled)
+            except Exception:
+                features.append(np.zeros(40))
+
+        if (i + 1) % 500 == 0:
+            print(f"  Processed {i+1}/{total}...")
+
     return np.array(features)
 
-print("Извлекаем аудио-признаки (это займет время)...")
+
+print("\nExtracting features (40 MFCC)...")
 X_train = extract_features(train_x)
 X_valid = extract_features(valid_x)
 
-# Убедимся, что valid_y тоже правильного типа
-y_train = np.array(encoded_train_y, dtype=int)
-y_valid = np.array(valid_y, dtype=int)
+# Scaling
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_valid = scaler.transform(X_valid)
+print("Features normalized.")
 
 
 # ==========================================
-# 3. ПОСТРОЕНИЕ И ОБУЧЕНИЕ НЕЙРОСЕТИ
+# 3. DEEPER MODEL ARCHITECTURE + BATCHNORM
 # ==========================================
 
 model = Sequential([
-    Dense(256, activation='relu', input_shape=(X_train.shape[1],)),
+    # Back to more capacity, but added BatchNormalization for stability
+    Dense(512, activation='relu', input_shape=(X_train.shape[1],)),
+    BatchNormalization(),
+    Dropout(0.4),
+    
+    Dense(256, activation='relu'),
+    BatchNormalization(),
     Dropout(0.3),
+    
     Dense(128, activation='relu'),
-    Dropout(0.3),
+    BatchNormalization(),
+    Dropout(0.2),
+    
     Dense(NUM_CLASSES, activation='softmax')
 ])
 
-model.compile(optimizer='adam', 
-              loss='sparse_categorical_crossentropy', 
-              metrics=['accuracy'])
-
-# В ТЗ сказано "от 10 до 100 эпох"
-EPOCHS = 50 
-
-print("Начинаем обучение нейросети...")
-history = model.fit(
-    X_train, y_train,
-    validation_data=(X_valid, y_valid),
-    epochs=EPOCHS,
-    batch_size=32
+model.compile(
+    optimizer='adam',
+    loss='sparse_categorical_crossentropy',
+    metrics=['accuracy']
 )
 
+early_stop = EarlyStopping(
+    monitor='val_loss', 
+    patience=20, # More patience
+    restore_best_weights=True,
+    verbose=1
+)
+
+print("\nStarting final training...")
+history = model.fit(
+    X_train, encoded_train_y,
+    validation_data=(X_valid, encoded_valid_y),
+    epochs=100,
+    batch_size=32,
+    callbacks=[early_stop]
+)
+
+actual_epochs = len(history.history['accuracy'])
+
 
 # ==========================================
-# 4. СОХРАНЕНИЕ РЕЗУЛЬТАТОВ ДЛЯ ФРОНТЕНДА
+# 4. SAVE
 # ==========================================
 
-# Сохраняем модель
 model.save("alien_model.h5")
-print("Модель сохранена как 'alien_model.h5'")
+joblib.dump(scaler, 'scaler.pkl')
 
-# Сохраняем историю (ТОЧНОСТЬ на валидационных данных по эпохам) для построения Графика №1 на фронтенде
 hist_dict = {
+    'accuracy': history.history['accuracy'],
     'val_accuracy': history.history['val_accuracy'],
-    'epochs': list(range(1, EPOCHS + 1))
+    'loss': history.history['loss'],
+    'val_loss': history.history['val_loss'],
+    'epochs': list(range(1, actual_epochs + 1))
 }
 with open('history.json', 'w') as f:
     json.dump(hist_dict, f)
 
-# Сохраняем количество записей на класс (График №2)
-unique, counts = np.unique(y_train, return_counts=True)
-train_counts = {int(k): int(v) for k, v in zip(unique, counts)}
+unique, counts = np.unique(encoded_train_y, return_counts=True)
+train_counts = {class_mapping[int(k)]: int(v) for k, v in zip(unique, counts)}
 with open('train_counts.json', 'w') as f:
     json.dump(train_counts, f)
-    
-print("Всё готово! Скачайте файлы: alien_model.h5, history.json, train_counts.json и class_mapping.json")
+
+print("\nDone! All files generated.")
