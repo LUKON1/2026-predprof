@@ -1,13 +1,3 @@
-"""
-Training script for Yandex DataSphere (Olympiad 2026) - SIMPLIFIED STABLE VERSION
-
-Instructions:
-1. Upload Data.npz to DataSphere project files.
-2. Copy this entire script into one cell and run it.
-3. After completion, download 5 files:
-   alien_model.h5, scaler.pkl, history.json, train_counts.json, class_mapping.json
-"""
-
 import re
 import io
 import json
