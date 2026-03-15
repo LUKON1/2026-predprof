@@ -13,6 +13,15 @@ services:
       - mongodata:/data/db
     restart: unless-stopped
 
+  ml-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    container_name: predprof-ml
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
   backend:
     build: 
       context: ./server
@@ -27,8 +36,10 @@ services:
       - DB_HOST=mongodb
       - DB_PORT=27017
       - PORT=5000
+      - ML_SERVICE_URL=http://ml-service:8000/predict
     depends_on:
       - mongodb
+      - ml-service
     restart: unless-stopped
 
   frontend:
